@@ -11,6 +11,9 @@ differential ADC readings.
 * Author(s): Carter Nelson, adapted from MCP3xxx original by Brent Rubell
 """
 
+from urllib import request
+
+
 try:
     from typing import Optional
     from .ads1x15 import ADS1x15
@@ -59,3 +62,21 @@ class AnalogIn:
         """Returns the voltage from the ADC pin as a floating point value."""
         volts = self.value * _ADS1X15_PGA_RANGE[self._ads.gain] / 32767
         return volts
+
+    @property
+    def request_value(self):
+        """Returns the value of an ADC pin as an integer."""
+        ready = False
+        request = self._ads.request_read(self._pin_setting) << (16 - self._ads.bits)
+        val = request[0]
+        ready = request[1]
+        return val,ready
+
+    @property
+    def requet_voltage(self):
+        """Returns the voltage from the ADC pin as a floating point value and a boolean that indicates if the conversion is ready."""
+        ready = False
+        request = self.request_value()
+        volts = request() * _ADS1X15_PGA_RANGE[self._ads.gain] / 32767
+        return volts,ready
+

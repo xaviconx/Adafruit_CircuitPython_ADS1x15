@@ -80,6 +80,10 @@ class ADS1x15:
         self.data_rate = self._data_rate_default() if data_rate is None else data_rate
         self.mode = mode
         self.i2c_device = I2CDevice(i2c, address)
+        self.last_single_rdy = False
+        self.last_continuous_rdy = False
+        self.continous_time = 0
+        self.last_continous_time = 0
 
     @property
     def data_rate(self):
@@ -141,6 +145,68 @@ class ADS1x15:
         """
         pin = pin if is_differential else pin + 0x04
         return self._read(pin)
+
+    def request_read(self, pin: Pin):
+        """I2C Interface for ADS1x15-based ADCs reads.
+        Return a List:
+        int: Value of the ADC (0 if not ready)
+        bool: True if the reading is ready
+
+        :param ~microcontroller.Pin pin: individual or differential pin.
+        :param bool is_differential: single-ended or differential read.
+        """
+        #Fastest case, no need to wait or resend config.
+        if self.mode == Mode.CONTINUOUS and self._last_pin_read == pin:
+            val = self._conversion_value(self.get_last_result(True))
+            return val,True
+
+        # Assign last pin read if in SINGLE mode or first sample in CONTINUOUS mode on this pin
+        self._last_pin_read = pin
+
+        # Configure ADC every time before a conversion in SINGLE mode
+        # or changing channels in CONTINUOUS mode
+        if self.mode == Mode.SINGLE:
+            if self.last_single_rdy:    #if the last reading was completed, send config again
+                self.last_single_rdy = False
+                config = _ADS1X15_CONFIG_OS_SINGLE
+                config |= (pin & 0x07) << _ADS1X15_CONFIG_MUX_OFFSET
+                config |= _ADS1X15_CONFIG_GAIN[self.gain]
+                config |= self.mode
+                config |= self.rate_config[self.data_rate]
+                config |= _ADS1X15_CONFIG_COMP_QUE_DISABLE
+                self._write_register(_ADS1X15_POINTER_CONFIG, config)   #send config, absolutely necesary if a different channel is read
+        else:
+            if self.last_continuous_rdy:    #if the last reading was completed, send config again
+                self.last_continuous_rdy = False
+                self.continous_time = time.time_ns()
+                config = 0
+                config |= (pin & 0x07) << _ADS1X15_CONFIG_MUX_OFFSET
+                config |= _ADS1X15_CONFIG_GAIN[self.gain]
+                config |= self.mode
+                config |= self.rate_config[self.data_rate]
+                config |= _ADS1X15_CONFIG_COMP_QUE_DISABLE
+                self._write_register(_ADS1X15_POINTER_CONFIG, config)   #send config, absolutely necesary if a different channel is read
+        
+        # Wait for conversion to complete
+        # ADS1x1x devices settle within a single conversion cycle
+        if self.mode == Mode.SINGLE:
+            # Continuously poll conversion complete status bit
+            if not self._conversion_complete():
+                return 0,False
+            else:
+                self.last_single_rdy = True
+        else:
+            if (self.continous_time - self.last_continous_time) > ((2 / self.data_rate) * 1000000000):
+                self.last_continous_time = self.continous_time
+                self.last_continuous_rdy = True
+                val = self._conversion_value(self.get_last_result(False))
+                return val,True
+
+            # Can't poll registers in CONTINUOUS mode
+            # Wait expected time for two conversions to complete
+            #time.sleep(2 / self.data_rate)
+
+        return 0,False
 
     def _data_rate_default(self) -> int:
         """Retrieve the default data rate for this ADC (in samples per second).
